@@ -1,0 +1,123 @@
+services:
+  # === TensorRT 疲劳检测 + MJPEG 推流 (:8080) ===
+  detector:
+    image: yolo11-jupyter:latest
+    container_name: fatigue-detector
+    runtime: nvidia
+    restart: always
+    ports:
+      - "8080:8080"
+    devices:
+      - /dev/video0:/dev/video0
+    group_add:
+      - video
+    volumes:
+      - /home/neo/yolo-workspace/notebooks:/workspace/notebooks
+      - /home/neo/yolo-workspace/datasets:/workspace/datasets
+      - /home/neo/yolo-workspace/models:/workspace/models
+      - /home/neo/yolo-workspace/tiring_detection:/workspace/tiring_detection
+    command: >
+      python3 /workspace/tiring_detection/jetson_deploy/detector_service.py
+      --model /workspace/models/eye_mouth_detect/weights/best.pt
+      --pose-model /workspace/models/yolo11n-pose.pt
+      --api-url http://fatigue-api:8000/api/events
+      --http-port 8080
+    depends_on:
+      - fastapi
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # === JupyterLab (:8888) ===
+  yolo-jupyter:
+    image: yolo11-jupyter:latest
+    container_name: yolo11-jupyter
+    runtime: nvidia
+    restart: always
+    ports:
+      - "8888:8888"
+    volumes:
+      - /home/neo/yolo-workspace/notebooks:/workspace/notebooks
+      - /home/neo/yolo-workspace/datasets:/workspace/datasets
+      - /home/neo/yolo-workspace/models:/workspace/models
+      - /home/neo/yolo-workspace/tiring_detection:/workspace/tiring_detection
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # === FastAPI + Dashboard (:8000) ===
+  fastapi:
+    build:
+      context: /home/neo/yolo-workspace/tiring_detection
+      dockerfile: backend/Dockerfile
+    container_name: fatigue-api
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - /home/neo/yolo-workspace/tiring_detection/data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # === 电池气体异常监测 — 回放 + LSTM-AE 推理 (:8081) ===
+  gas-monitor:
+    image: yolo11-jupyter:latest
+    container_name: gas-monitor
+    restart: always
+    ports:
+      - "8081:8081"
+    volumes:
+      - /home/neo/yolo-workspace/tiring_detection:/workspace/tiring_detection
+    command: >
+      python3 /workspace/tiring_detection/battery_gas/gas_monitor.py
+      --speed 10
+      --model-dir /workspace/tiring_detection/data/gas_model
+      --state-file /workspace/tiring_detection/data/gas_state
+      --events-dir /workspace/tiring_detection/data
+      --watch-dir /workspace/tiring_detection/data/gas_uploads
+      --port 8081
+      --api-url http://fatigue-api:8000/api/gas/events
+    depends_on:
+      - fastapi
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # === PostgreSQL (:5432) ===
+  postgres:
+    image: postgres:16-alpine
+    container_name: fatigue-db
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: fatigue_monitor
+      POSTGRES_USER: fatigue
+      POSTGRES_PASSWORD: fatigue123
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fatigue -d fatigue_monitor"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pgdata:
